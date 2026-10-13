@@ -4,7 +4,9 @@
 
 **Goal:** Construire une app mobile avec FlutterFlow de diagnostic de maladies des plantes via chatbot IA conversationnel, avec Firebase comme backend.
 
-**Architecture:** Firebase (BDD + Auth + Firestore) → FlutterFlow (frontend) → API LLM externe pour le chatbot (Anthropic/OpenAI)
+**Architecture:** FlutterFlow (frontend) → Firebase Auth + Firestore pour les données privées ; FlutterFlow → fonction serveur authentifiée → API LLM pour le chatbot. La clé du fournisseur LLM reste exclusivement sur le serveur.
+
+**État de ce dépôt :** il contient un plan, une présentation, une charte graphique et un trailer. Aucun export de l'application FlutterFlow ni configuration Firebase déployée n'est fourni. Les règles proposées dans `security/firestore.rules` sont un exemple à intégrer et à valider dans l'émulateur avant tout déploiement ; modifier ce dépôt ne sécurise pas automatiquement un projet Firebase existant.
 
 **Tech Stack:** FlutterFlow (no-code frontend), Firebase Firestore (base de données), Firebase Authentication, API Anthropic/OpenAI
 
@@ -33,7 +35,8 @@
 - [ ] **Step 2: Activer Firestore Database**
   - Dans le menu de gauche → "Firestore Database"
   - Cliquer sur "Créer une base de données"
-  - Mode de sécurité : "Mode test" (pour développement)
+  - Mode de sécurité : "Mode production" (accès refusé par défaut)
+  - Pour le développement, utiliser l'émulateur Firebase avec des données fictives ; ne pas ouvrir une base accessible sur Internet en mode test.
   - Localisation : sélectionner la région la plus proche (ex: `eur3` pour Europe)
   - Cliquer sur "Créer"
 
@@ -54,21 +57,21 @@
   - Ouvrir Firestore Database
   - Cliquer sur "Démarrer une collection"
   - ID de collection : `users`
-  - Premier document (auto-généré)
+  - ID du document : UID du compte Firebase Authentication (`users/{uid}`), jamais un ID aléatoire
   - Ajouter les champs :
     - `email` — Type: `string`
     - `name` — Type: `string`
     - `farm_name` — Type: `string` (optionnel)
     - `location` — Type: `geopoint` (ou `string` si vous stockez une adresse textuelle)
-    - `role` — Type: `string` (valeurs: "farmer" | "admin")
+    - `role` — Type: `string`, initialisé à `farmer` ; non modifiable par le client. Les droits d'administration doivent être attribués côté serveur et ne jamais dépendre d'un champ de profil librement éditable.
     - `created_at` — Type: `timestamp` (utiliser Server Timestamp depuis l'app)
   - Cliquer sur "Enregistrer"
 
-- [ ] **Step 2: Collection `  `**
+- [ ] **Step 2: Collection `diagnostics`**
   - Cliquer sur "Ajouter une collection"
   - ID de collection : `diagnostics`
   - Ajouter les champs :
-    - `user_ref` — Type: `reference` (référence au document `users/{uid}`)
+    - `user_id` — Type: `string` (UID Firebase Authentication du propriétaire, immuable)
     - `culture` — Type: `string` (ex: "tomates", "blé")
     - `symptoms` — Type: `string` (description libre)
     - `conversation` — Type: `array` of `map` ; chaque map contient:
@@ -84,7 +87,7 @@
   - Cliquer sur "Ajouter une collection"
   - ID de collection : `sensor_data`
   - Ajouter les champs :
-    - `user_ref` — Type: `reference` (référence au document `users/{uid}`)
+    - `user_id` — Type: `string` (UID Firebase Authentication du propriétaire, immuable)
     - `temperature` — Type: `double` (°C)
     - `humidity` — Type: `double` (%)
     - `rainfall` — Type: `double` (mm)
@@ -94,7 +97,7 @@
   - Cliquer sur "Ajouter une collection"
   - ID de collection : `alerts`
   - Ajouter les champs :
-    - `user_ref` — Type: `reference` (référence au document `users/{uid}`)
+    - `user_id` — Type: `string` (UID Firebase Authentication du destinataire, immuable)
     - `type` — Type: `string` ("maladie" | "météo")
     - `message` — Type: `string`
     - `severity` — Type: `string` ("info" | "warning" | "critical")
@@ -109,36 +112,16 @@
   - Console Firebase → Firestore Database
   - Onglet "Règles"
 
-- [ ] **Step 2: Remplacer les règles par defaut**
-  ```
-  rules_version = '2';
-  service cloud.firestore {
-    match /databases/{database}/documents {
-      // Authentification requise pour toute lecture/écriture
-      match /users/{uid} {
-        allow read, write: if request.auth.uid == uid;
-      }
-      
-      match /diagnostics/{document=**} {
-        allow read: if request.auth != null && resource.data.user_id == request.auth.uid;
-        allow create: if request.auth != null && request.resource.data.user_id == request.auth.uid;
-        allow update, delete: if request.auth != null && resource.data.user_id == request.auth.uid;
-      }
-      
-      match /alerts/{document=**} {
-        allow read: if request.auth != null && resource.data.user_id == request.auth.uid;
-        allow create: if request.auth != null;
-        allow update, delete: if request.auth != null && resource.data.user_id == request.auth.uid;
-      }
-      
-      match /sensor_data/{document=**} {
-        allow read: if request.auth != null && resource.data.user_id == request.auth.uid;
-        allow create: if request.auth != null && request.resource.data.user_id == request.auth.uid;
-      }
-    }
-  }
-  ```
-  - Cliquer sur "Publier"
+- [ ] **Step 2: Intégrer et tester les règles restrictives**
+  - Utiliser le fichier versionné [`security/firestore.rules`](security/firestore.rules), source unique de l'exemple de règles.
+  - Les profils restent privés, le propriétaire d'un document ne peut pas être transféré et un compte client ne peut pas se promouvoir administrateur.
+  - Seul le serveur de confiance crée les alertes. Le destinataire peut uniquement les lire, les marquer comme lues ou les supprimer.
+  - Les mesures sont créées par leur propriétaire puis restent immuables côté client ; les diagnostics peuvent être modifiés uniquement par leur propriétaire.
+  - Les collections et sous-collections non déclarées restent interdites. La communauté conserve des données de démonstration tant qu'un modèle de publication et de modération n'est pas défini.
+  - Toutes les requêtes de liste privées doivent filtrer `user_id == current_user.uid` : les règles ne filtrent pas les résultats à la place de la requête.
+  - Vérifier la matrice d'autorisation dans [`security/README.md`](security/README.md) avec deux comptes de test et un visiteur anonyme, dans l'émulateur.
+  - Si une application utilise déjà `user_ref`, migrer explicitement le schéma et les requêtes vers `user_id` avant d'appliquer ces règles. Ne pas ouvrir les permissions pour contourner une erreur de migration.
+  - Publier les règles seulement après validation de l'application et sauvegarde des données existantes.
 
 ---
 
@@ -228,7 +211,7 @@
     - Button "Créer mon compte"
   - Dans le workflow du bouton :
     - Action Firebase → Create User (email, password)
-    - Créer un document dans la collection `users` avec les infos
+    - Créer `users/{UID du compte créé}` avec les infos, `role: farmer` et `created_at: Server Timestamp`
     - Si succès : naviguer vers "home"
     - Si erreur : afficher message
 
@@ -239,39 +222,26 @@
 
 ---
 
-### Task 7: Configuration de l'API LLM dans FlutterFlow
+### Task 7: Appeler le LLM par une fonction serveur authentifiée
 
-- [ ] **Step 1: Créer une fonction API pour le chatbot**
-  - Menu : "Backend" → "API Calls"
-  - Ajouter une nouvelle API : "chat_diagnostic"
-  - Méthode : POST
-  - URL : `https://api.anthropic.com/v1/messages` (Anthropic) ou `https://api.openai.com/v1/chat/completions` (OpenAI)
+- [ ] **Step 1: Préparer le backend de confiance**
+  - Prévoir une fonction serveur `chat_diagnostic`, par exemple une fonction Firebase appelable, après vérification du coût et du mode de facturation. Ce dépôt n'implémente ni ne déploie cette fonction.
+  - Stocker la clé du fournisseur dans un gestionnaire de secrets serveur. Ne jamais l'intégrer dans une API publique FlutterFlow, une variable cliente, un export web ou mobile, ni dans Git.
+  - Vérifier le jeton Firebase à chaque appel, refuser les appels anonymes et contrôler les droits sur les diagnostics demandés.
+  - Appliquer côté serveur des quotas par UID et globaux, une taille maximale des messages, un nombre maximal de messages, une limite de sortie et un délai d'expiration.
+  - Configurer le fournisseur, le modèle et le prompt système côté serveur. Ne pas accepter une URL fournisseur arbitraire ou un rôle système soumis par le client.
 
-- [ ] **Step 2: Configurer les headers**
-  - Ajouter Header : `x-api-key: [VOTRE_CLÉ_ANTHROPIC]` (ou `Authorization: Bearer [CLÉ_OPENAI]`)
-  - Ajouter Header : `content-type: application/json`
-  - Si Anthropic : Ajouter Header : `anthropic-version: 2023-06-01`
+- [ ] **Step 2: Connecter FlutterFlow au backend**
+  - Appeler la fonction avec le SDK ou le mécanisme compatible avec le protocole choisi ; transmettre le jeton utilisateur et les seuls champs nécessaires au diagnostic.
+  - Envoyer par exemple `{ "message": "Les feuilles présentent des taches jaunes." }` après validation de la saisie. La clé fournisseur n'est jamais transmise au client.
+  - Intégrer App Check comme protection complémentaire lorsque possible, sans remplacer les contrôles d'identité ni les quotas.
+  - Ne pas journaliser les jetons, les clés ou le contenu privé intégral des conversations.
 
-- [ ] **Step 3: Configurer le body de la requête**
-  - Body type : JSON
-  - Pour Anthropic :
-  ```json
-  {
-    "model": "claude-3-haiku-20240307",
-    "max_tokens": 500,
-    "system": "Tu es un assistant de diagnostic agricole. Tu aides les agriculteurs à identifier les maladies des plantes. Pose des questions de clarification, puis donne un diagnostic avec probabilité, traitement et prévention. Sois concis. Quand tu as assez d'informations, commence ta réponse par 'DIAGNOSTIC:' suivi de la maladie, probabilité, traitement.",
-    "messages": [{"role": "user", "content": "$user_message"}]
-  }
-  ```
-  - Pour OpenAI :
-  ```json
-  {
-    "model": "gpt-3.5-turbo",
-    "max_tokens": 500,
-    "system": "[même prompt qu'Anthropic]",
-    "messages": [{"role": "user", "content": "$user_message"}]
-  }
-  ```
+- [ ] **Step 3: Vérifier les limites et les erreurs**
+  - Tester les appels anonymes, les jetons expirés, l'accès à un diagnostic tiers, les corps trop volumineux, les limites de quota et les indisponibilités du fournisseur.
+  - Afficher les réponses comme du texte non fiable. Ne pas interpréter une réponse LLM comme du HTML exécutable, une instruction privilégiée ou un diagnostic médical/agronomique confirmé.
+  - Si une clé fournisseur a déjà été distribuée dans une application ou exposée dans Git, la révoquer et en créer une nouvelle avant de la stocker côté serveur.
+  - Voir [`security/README.md`](security/README.md) pour les limites de vérification et les sources officielles.
 
 ---
 
@@ -324,7 +294,7 @@
     1. Récupérer le texte de l'input
     2. Ajouter le message utilisateur à la liste locale (UI update)
     3. Effacer l'input
-    4. Appeler l'API LLM (chat_diagnostic)
+    4. Appeler la fonction serveur authentifiée `chat_diagnostic`
     5. Récupérer la réponse
     6. Ajouter la réponse à la liste
     7. Créer un document dans `diagnostics` avec :
@@ -384,10 +354,11 @@
   - ListView des posts (texte fixe ou données statiques pour la démo)
   - Chaque post : auteur, date, contenu, nombre de likes
 
-- [ ] **Step 3: Permettre de partager des conseils**
+- [ ] **Step 3: Définir les permissions avant d'activer le partage**
   - TextInput pour écrire un nouveau post
   - Button "Partager"
-  - Workflow : créer un document dans une collection `posts` (à créer)
+  - Conserver les données statiques de démonstration tant que le schéma `posts`, les droits auteur/lecteur, les limites et la modération ne sont pas définis et testés. Les règles proposées refusent cette collection par défaut.
+  - Activer ensuite la création d'un post uniquement pour un utilisateur authentifié, en empêchant la modification de l'auteur et la modification/suppression des posts d'autrui.
 
 ---
 
@@ -428,34 +399,24 @@
   - Une fois la compilation terminée, télécharger le fichier
   - Tester sur un appareil mobile ou un émulateur
 
-- [ ] **Step 3: Passer en mode production Firebase**
+- [ ] **Step 3: Vérifier les protections Firebase avant publication**
   - Console Firebase → Firestore Database
   - Onglet "Règles"
-  - Changer le mode de "test" à "production"
-  - Adapter les règles si nécessaire
+  - Vérifier que la base n'a jamais été ouverte en mode test sur Internet et que les règles validées sont effectivement déployées.
+  - Exécuter la matrice de tests avec des comptes de test distincts dans l'émulateur, puis contrôler la configuration réelle sans accéder aux données privées d'autres utilisateurs.
+  - Vérifier le schéma, les filtres propriétaire, les quotas serveur, les restrictions des accès IAM et l'absence de clé fournisseur dans l'application distribuée.
 
 ---
 
 ## Architecture Finale
 
-```
-┌──────────────────────────────────────────┐
-│         App Mobile (FlutterFlow)          │
-│  (Authentification, Diagnostic, Carte)   │
-└────────────────────┬─────────────────────┘
-                     │
-        ┌────────────┴────────────┐
-        │                         │
-   ┌────▼─────────┐      ┌────────▼──────┐
-   │   Firebase   │      │ API LLM        │
-   │ ┌──────────┐ │      │ (Anthropic /   │
-   │ │ Firestore│ │      │  OpenAI)       │
-   │ │ (Data)   │ │      │                │
-   │ ├──────────┤ │      └────────────────┘
-   │ │ Auth     │ │
-   │ │ (Users)  │ │
-   │ └──────────┘ │
-   └──────────────┘
+```text
+FlutterFlow ── Firebase Authentication
+     │
+     ├── Firestore (règles propriétaire ; aucun accès anonyme)
+     │
+     └── Fonction serveur (authentification, droits, quotas, validation)
+                 └── Fournisseur LLM (clé secrète côté serveur)
 ```
 
 ---
